@@ -27,7 +27,7 @@ static HEADER_LENGTH: u8 = 7;
 static MIN_DATA_LENGTH: u8 = 4;
 static MAX_DATA_LENGTH: u16 = 260;
 
-type Handlers = HashMap<u8, fn(&mut Register, &mut DefaultResponseWriter, Request)>;
+type Handlers = HashMap<u8, fn(&mut Register, &mut DefaultResponseWriter, Request) -> Result<(), u8>>;
 
 #[derive(Clone)]
 pub struct Server {
@@ -97,11 +97,21 @@ struct Register {
 }
 
 impl Register {
-    fn read_holding_registers(&mut self, w: &mut DefaultResponseWriter, r: Request) {
-        // TODO read range from request
-        let from = 0;
-        let to = 5;
-        w.payload = Vec::from_iter(self.intern[from..to].iter().cloned());
+    fn read_holding_registers(&mut self, w: &mut DefaultResponseWriter, r: Request) -> Result<(), u8> {
+        if r.payload.len() < 4 {
+            Err(99u8)?
+        }
+        let mut cur = std::io::Cursor::new(r.payload);
+        // NOTE: lol
+        let addr = usize::try_from(cur.read_u16::<BigEndian>().unwrap()).unwrap();
+        let number_of_registers = usize::try_from(cur.read_u16::<BigEndian>().unwrap()).unwrap();
+
+
+        let payload = Vec::from_iter(self.intern[addr..addr+number_of_registers].iter().cloned());
+        // bytecount + values
+        w.write(&[payload.len() as u8]).map_err(|_e|95u8)?;
+        w.write(&payload).map_err(|_e|95u8)?;
+        Ok(())
     }
 }
 
@@ -118,9 +128,9 @@ fn handle_conn(slaves: &HashMap<u8, SharedData>, stream: &mut TcpStream) -> Resu
 
     // TODO: if not exist => error
     let shared = slaves.get(&r.header.slave_id()).ok_or(92u8)?;
-    let h =shared.handlers.get(&r.fn_code()).ok_or(91u8)?;
+    let h = shared.handlers.get(&r.fn_code()).ok_or(91u8)?;
     let mut reg = shared.register.lock().unwrap();
-    h(&mut *reg, &mut w, r);
+    h(&mut *reg, &mut w, r)?;
     w.compile(stream).map_err(|_e|98u8)?;
     Ok(())
 }
